@@ -18,9 +18,11 @@ import os
 import streamlit as st
 
 # Bridge Streamlit secrets to environment variables so pydantic-settings
-# can read them. Must run before any project imports that trigger settings.
+# can read them. Use direct assignment (not setdefault) so secrets always
+# win over any pre-existing empty env vars on Streamlit Cloud.
 for _k, _v in st.secrets.items():
-    os.environ.setdefault(_k, str(_v))
+    if isinstance(_v, str):
+        os.environ[_k] = _v
 
 from collections import defaultdict
 from datetime import datetime
@@ -30,6 +32,9 @@ from rag_agent.agent.graph import get_compiled_graph
 from rag_agent.config import get_settings
 from rag_agent.corpus.chunker import DocumentChunker
 from rag_agent.vectorstore.store import VectorStoreManager
+
+# Clear the lru_cache so each Streamlit rerun picks up fresh secrets.
+get_settings.cache_clear()
 
 # ---------------------------------------------------------------------------
 # Cached Resources
@@ -420,12 +425,16 @@ def _is_insufficient(text: str) -> bool:
 def render_chat_panel(graph) -> None:
     from langchain_core.messages import HumanMessage
 
+    store = get_vector_store()
+    corpus_count = store._collection.count()
+
     col_title, col_btn = st.columns([4, 1])
     with col_title:
         st.markdown('<div class="section-label">Interview Preparation</div>', unsafe_allow_html=True)
         st.markdown(
-            '<p style="font-size:0.8rem; color:#666; margin-top:-4px;">'
-            "Answers are grounded in the ingested corpus. Topics: ANN, CNN, RNN, LSTM, Seq2Seq, Autoencoder.</p>",
+            f'<p style="font-size:0.8rem; color:#666; margin-top:-4px;">'
+            f"Answers are grounded in the ingested corpus ({corpus_count} chunks loaded). "
+            "Topics: ANN, CNN, RNN, LSTM, Seq2Seq, Autoencoder.</p>",
             unsafe_allow_html=True,
         )
     with col_btn:
@@ -478,12 +487,25 @@ def render_chat_panel(graph) -> None:
     if query:
         st.chat_message("user").write(query)
 
-        config = {"configurable": {"thread_id": st.session_state.thread_id}}
+        config = {
+            "configurable": {
+                "thread_id": st.session_state.thread_id,
+                "store": get_vector_store(),
+            }
+        }
         with st.spinner("Generating response..."):
-            result = graph.invoke(
-                {"messages": [HumanMessage(content=query)]},
-                config=config,
-            )
+            try:
+                result = graph.invoke(
+                    {"messages": [HumanMessage(content=query)]},
+                    config=config,
+                )
+            except (EnvironmentError, OSError) as exc:
+                st.error(
+                    f"**Configuration error:** {exc}\n\n"
+                    "Please add your `GROQ_API_KEY` to the Streamlit Cloud secrets "
+                    "(App settings → Secrets)."
+                )
+                return
 
         final = result.get("final_response")
         if final:
@@ -543,6 +565,14 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    if settings.llm_provider.value == "groq" and not settings.groq_api_key:
+        st.error(
+            "**GROQ_API_KEY is not set.**\n\n"
+            "Add it to your Streamlit Cloud secrets: App settings → Secrets → "
+            "`GROQ_API_KEY = \"your-key-here\"`"
+        )
+        st.stop()
 
     inject_styles()
 

@@ -12,12 +12,20 @@ PEP 8 | OOP | Single Responsibility
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, trim_messages
+from langchain_core.runnables.config import RunnableConfig
 
 from rag_agent.agent.prompts import SYSTEM_PROMPT
 from rag_agent.agent.state import AgentResponse, AgentState
 from rag_agent.config import LLMFactory, get_settings
 from rag_agent.vectorstore.store import VectorStoreManager
+
+
+@lru_cache(maxsize=1)
+def _get_store() -> VectorStoreManager:
+    return VectorStoreManager()
 
 
 # ---------------------------------------------------------------------------
@@ -69,14 +77,15 @@ Query: {original_query}"""
 # ---------------------------------------------------------------------------
 
 
-def retrieval_node(state: AgentState) -> dict:
+def retrieval_node(state: AgentState, config: RunnableConfig = None) -> dict:
     """
     Retrieve relevant chunks from ChromaDB based on the rewritten query.
 
     Sets no_context_found=True if no chunks are returned, which triggers
     the hallucination guard in the conditional edge.
     """
-    manager = VectorStoreManager()
+    configurable = (config or {}).get("configurable", {})
+    manager = configurable.get("store") or _get_store()
 
     if isinstance(state, dict):
         rewritten_query = state.get("rewritten_query", "")
