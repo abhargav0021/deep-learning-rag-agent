@@ -13,11 +13,18 @@ PEP 8 | OOP | Single Responsibility
 
 from __future__ import annotations
 
+import os
+
+import streamlit as st
+
+# Bridge Streamlit secrets to environment variables so pydantic-settings
+# can read them. Must run before any project imports that trigger settings.
+for _k, _v in st.secrets.items():
+    os.environ.setdefault(_k, str(_v))
+
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-
-import streamlit as st
 
 from rag_agent.agent.graph import get_compiled_graph
 from rag_agent.config import get_settings
