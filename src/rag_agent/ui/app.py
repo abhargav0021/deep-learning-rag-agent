@@ -3,30 +3,23 @@ app.py
 ======
 Streamlit user interface for the Deep Learning RAG Interview Prep Agent.
 
-Three-panel layout:
-  - Left sidebar: Document ingestion and corpus browser
-  - Centre: Document viewer
-  - Right: Chat interface
-
-API contract with the backend (agree this with Pipeline Engineer
-before building anything):
-
-  ingest(file_paths: list[Path]) -> IngestionResult
-  list_documents() -> list[dict]
-  get_document_chunks(source: str) -> list[DocumentChunk]
-  chat(query: str, history: list[dict], filters: dict) -> AgentResponse
+Layout:
+  - Left sidebar: Corpus ingestion and document library
+  - Centre: Document chunk viewer
+  - Right: Conversational query interface
 
 PEP 8 | OOP | Single Responsibility
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 
 from rag_agent.agent.graph import get_compiled_graph
-from rag_agent.agent.state import AgentResponse
 from rag_agent.config import get_settings
 from rag_agent.corpus.chunker import DocumentChunker
 from rag_agent.vectorstore.store import VectorStoreManager
@@ -34,56 +27,35 @@ from rag_agent.vectorstore.store import VectorStoreManager
 # ---------------------------------------------------------------------------
 # Cached Resources
 # ---------------------------------------------------------------------------
-# Use st.cache_resource for objects that should persist across reruns
-# and be shared across all user sessions. This prevents re-initialising
-# ChromaDB and reloading the embedding model on every button click.
 
 
 @st.cache_resource
 def get_vector_store() -> VectorStoreManager:
-    """
-    Return the singleton VectorStoreManager.
-
-    Cached so ChromaDB connection is initialised once per application
-    session, not on every Streamlit rerun.
-    """
     return VectorStoreManager()
 
 
 @st.cache_resource
 def get_chunker() -> DocumentChunker:
-    """Return the singleton DocumentChunker."""
     return DocumentChunker()
 
 
 @st.cache_resource
 def get_graph():
-    """Return the compiled LangGraph agent."""
     return get_compiled_graph()
 
 
 # ---------------------------------------------------------------------------
-# Session State Initialisation
+# Session State
 # ---------------------------------------------------------------------------
 
 
 def initialise_session_state() -> None:
-    """
-    Initialise all st.session_state keys on first run.
-
-    Must be called at the top of main() before any UI is rendered.
-    Without this, state keys referenced in callbacks will raise KeyError.
-
-    Interview talking point: Streamlit reruns the entire script on every
-    user interaction. session_state is the mechanism for persisting data
-    (chat history, ingestion results) across reruns.
-    """
     defaults = {
-        "chat_history": [],           # list of {"role": "user"|"assistant", "content": str}
-        "ingested_documents": [],     # list of dicts from list_documents()
-        "selected_document": None,    # source filename currently in viewer
+        "chat_history": [],
+        "ingested_documents": [],
+        "selected_document": None,
         "last_ingestion_result": None,
-        "thread_id": "default-session",  # LangGraph conversation thread
+        "thread_id": "default-session",
         "topic_filter": None,
         "difficulty_filter": None,
     }
@@ -93,36 +65,191 @@ def initialise_session_state() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ingestion Panel (Sidebar)
+# Styles
 # ---------------------------------------------------------------------------
 
 
-def render_ingestion_panel(
-    store: VectorStoreManager,
-    chunker: DocumentChunker,
-) -> None:
-    """
-    Render the document ingestion panel in the sidebar.
+def inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-    Allows multi-file upload of PDF and Markdown files. Displays
-    ingestion results (chunks added, duplicates skipped, errors).
-    Updates the ingested documents list after successful ingestion.
+        html, body, [class*="css"] {
+            font-family: 'Inter', sans-serif;
+        }
 
-    Parameters
-    ----------
-    store : VectorStoreManager
-    chunker : DocumentChunker
-    """
-    st.sidebar.header("📂 Corpus Ingestion")
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+        }
+
+        /* Page title */
+        .page-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: #f0f0f0;
+            margin: 0;
+            padding: 0;
+        }
+
+        .page-subtitle {
+            font-size: 0.82rem;
+            color: #888;
+            margin-top: 0.2rem;
+            letter-spacing: 0.01em;
+        }
+
+        .page-header {
+            border-bottom: 1px solid #2a2a2a;
+            padding-bottom: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        /* Section labels */
+        .section-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #666;
+            margin-bottom: 0.6rem;
+        }
+
+        /* Corpus document card */
+        .doc-card {
+            background: #111118;
+            border: 1px solid #222;
+            border-left: 3px solid var(--card-accent, #3B82F6);
+            border-radius: 4px;
+            padding: 9px 12px;
+            margin-bottom: 6px;
+        }
+
+        .doc-card-title {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #e0e0e0;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .doc-card-meta {
+            font-size: 0.72rem;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        .topic-badge {
+            display: inline-block;
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            border-radius: 3px;
+            padding: 1px 6px;
+            margin-right: 6px;
+        }
+
+        /* Chat */
+        .chat-welcome {
+            background: #111118;
+            border: 1px solid #1e1e2e;
+            border-radius: 6px;
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .chat-welcome-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #bbb;
+            margin-bottom: 0.5rem;
+        }
+
+        .source-list {
+            font-size: 0.8rem;
+            color: #888;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .stat-pill {
+            display: inline-block;
+            background: #1a1a2a;
+            border: 1px solid #2a2a3a;
+            border-radius: 20px;
+            padding: 3px 10px;
+            font-size: 0.72rem;
+            color: #aaa;
+            margin-right: 6px;
+            margin-bottom: 4px;
+        }
+
+        /* Chunk viewer */
+        .chunk-text {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: #bbb;
+            background: #0d0d14;
+            border: 1px solid #1e1e2e;
+            border-radius: 4px;
+            padding: 10px 12px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+
+        .chunk-label {
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #555;
+            margin-bottom: 4px;
+        }
+
+        /* Divider */
+        hr {
+            border-color: #1e1e2e !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sidebar — Ingestion
+# ---------------------------------------------------------------------------
+
+TOPIC_COLORS: dict[str, str] = {
+    "ANN": "#4A90D9",
+    "CNN": "#E67E22",
+    "RNN": "#27AE60",
+    "LSTM": "#8E44AD",
+    "Seq2Seq": "#E74C3C",
+    "Autoencoder": "#16A085",
+    "GAN": "#F39C12",
+    "SOM": "#1ABC9C",
+    "general": "#555",
+}
+
+
+def render_ingestion_panel(store: VectorStoreManager, chunker: DocumentChunker) -> None:
+    st.sidebar.markdown('<div class="section-label">Corpus Ingestion</div>', unsafe_allow_html=True)
+
     uploaded_files = st.sidebar.file_uploader(
-    "Upload study materials",
-    type=["pdf", "md"],
-    accept_multiple_files=True
-)
+        "Upload study materials",
+        type=["pdf", "md"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
+
     if uploaded_files:
-        if st.sidebar.button("Ingest Documents"):
+        if st.sidebar.button("Ingest Documents", use_container_width=True):
             import tempfile
-            from pathlib import Path
 
             file_paths = []
             for file in uploaded_files:
@@ -132,39 +259,16 @@ def render_ingestion_panel(
 
             progress = st.sidebar.progress(0, text="Chunking files...")
             chunks = chunker.chunk_files(file_paths)
-            progress.progress(50, text="Embedding & storing...")
+            progress.progress(50, text="Embedding and storing...")
             result = store.ingest(chunks)
-            progress.progress(100, text="Done!")
+            progress.progress(100, text="Complete.")
             progress.empty()
 
             st.sidebar.success(
-                f"✅ {result.ingested} chunks added, {result.skipped} duplicates skipped"
+                f"{result.ingested} chunks added — {result.skipped} duplicates skipped."
             )
             if result.errors:
                 st.sidebar.error(f"Errors: {result.errors}")
-
-    # TODO: implement
-    # 1. st.sidebar.file_uploader(
-    #        "Upload study materials",
-    #        type=["pdf", "md"],
-    #        accept_multiple_files=True
-    #    )
-    #
-    # 2. "Ingest Documents" button — only enabled when files are selected
-    #
-    # 3. On button click:
-    #    a. Save uploaded files to a temp directory
-    #    b. chunker.chunk_files(file_paths)
-    #    c. store.ingest(chunks) → IngestionResult
-    #    d. Display result: st.success / st.warning / st.error
-    #       Show: "{result.ingested} chunks added, {result.skipped} duplicates skipped"
-    #    e. Refresh ingested documents list in session_state
-    #
-    # 4. Render ingested documents list below the uploader
-    #    For each document: show source name, topic, chunk count
-    #    Add a small "🗑 Remove" button per document that calls store.delete_document()
-
-    # st.sidebar.info("Upload .pdf or .md files to populate the corpus.")
 
 
 def render_corpus_stats(store: VectorStoreManager) -> None:
@@ -174,159 +278,176 @@ def render_corpus_stats(store: VectorStoreManager) -> None:
             return
         all_meta = store._collection.get(include=["metadatas"])
         topics = sorted({m.get("topic", "?") for m in all_meta["metadatas"]})
+
         st.sidebar.divider()
-        st.sidebar.markdown(
-            f"📊 **{len(topics)} topics · {count} chunks**  \n"
-            + "  ".join([f"`{t}`" for t in topics])
+        st.sidebar.markdown('<div class="section-label">Corpus Overview</div>', unsafe_allow_html=True)
+
+        pills_html = "".join(
+            f'<span class="stat-pill">{t}</span>' for t in topics
         )
-    except:
+        st.sidebar.markdown(
+            f'<div style="margin-bottom:6px">'
+            f'<span class="stat-pill">{count} chunks</span>'
+            f'<span class="stat-pill">{len(topics)} topics</span>'
+            f"</div>"
+            f"<div>{pills_html}</div>",
+            unsafe_allow_html=True,
+        )
+    except Exception:
         pass
 
 
 def render_ingested_documents_panel(store: VectorStoreManager) -> None:
-    TOPIC_COLORS = {
-        "ANN": "#4A90D9",
-        "CNN": "#E67E22",
-        "RNN": "#27AE60",
-        "LSTM": "#8E44AD",
-        "Seq2Seq": "#E74C3C",
-        "Autoencoder": "#16A085",
-        "general": "#7F8C8D",
-    }
     try:
         docs = store.list_documents()
         if not docs:
             return
+
         st.sidebar.divider()
-        with st.sidebar.expander(f"🗂 Corpus Library  ·  {len(docs)} docs", expanded=False):
+        with st.sidebar.expander(f"Document Library  ({len(docs)})", expanded=False):
             for doc in docs:
                 source = doc["source"]
                 topic = doc["topic"]
                 chunk_count = doc["chunk_count"]
-                color = TOPIC_COLORS.get(topic, "#7F8C8D")
+                color = TOPIC_COLORS.get(topic, "#555")
+
                 st.markdown(
-                    f"""<div style="
-                        background: #1e1e2e;
-                        border-left: 4px solid {color};
-                        border-radius: 6px;
-                        padding: 8px 10px;
-                        margin-bottom: 6px;
-                    ">
-                    <span style="font-weight:600; font-size:0.82em; color:#f0f0f0;">{source}</span><br>
-                    <span style="
-                        background:{color}22;
-                        color:{color};
-                        font-size:0.7em;
-                        border-radius:4px;
-                        padding:1px 6px;
-                        font-weight:600;
-                    ">{topic}</span>
-                    <span style="color:#888; font-size:0.72em; margin-left:6px;">{chunk_count} chunks</span>
-                    </div>""",
+                    f"""
+                    <div class="doc-card" style="--card-accent: {color}">
+                        <div class="doc-card-title">{source}</div>
+                        <div class="doc-card-meta">
+                            <span class="topic-badge" style="background:{color}18; color:{color};">{topic}</span>
+                            {chunk_count} chunks
+                        </div>
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
+
                 col_view, col_del = st.columns([1, 1])
                 with col_view:
-                    if st.button("📄 View", key=f"view_{source}", use_container_width=True):
+                    if st.button("View", key=f"view_{source}", use_container_width=True):
                         st.session_state["selected_document"] = source
                 with col_del:
-                    if st.button("🗑 Remove", key=f"del_{source}", use_container_width=True):
+                    if st.button("Remove", key=f"del_{source}", use_container_width=True):
                         store.delete_document(source)
                         st.rerun()
-    except:
+    except Exception:
         pass
 
 
 # ---------------------------------------------------------------------------
-# Document Viewer Panel (Centre)
+# Centre — Document Viewer
 # ---------------------------------------------------------------------------
 
 
-# def render_document_viewer(store: VectorStoreManager) -> None:
 def render_document_viewer(store: VectorStoreManager) -> None:
-    st.subheader("📄 Document Viewer")
+    st.markdown('<div class="section-label">Document Viewer</div>', unsafe_allow_html=True)
 
     try:
         docs = store._collection.get(include=["metadatas", "documents"])
-    except:
+    except Exception:
         st.info("No documents found.")
         return
 
     if not docs or not docs.get("documents"):
-        st.info("No documents ingested yet.")
+        st.markdown(
+            '<p style="color:#555; font-size:0.85rem;">No documents ingested yet. '
+            "Upload study materials from the sidebar to begin.</p>",
+            unsafe_allow_html=True,
+        )
         return
 
     documents = docs["documents"]
     metadatas = docs["metadatas"]
 
-    # Group chunks by source
-    from collections import defaultdict
-    grouped = defaultdict(list)
+    grouped: dict = defaultdict(list)
     for text, meta in zip(documents, metadatas):
         source = meta.get("source", "Unknown")
         grouped[source].append((text, meta))
 
     total_chunks = len(documents)
     total_docs = len(grouped)
-    st.caption(f"{total_docs} documents · {total_chunks} total chunks")
-    st.divider()
+
+    st.markdown(
+        f'<p class="doc-card-meta" style="margin-bottom:0.75rem;">'
+        f"{total_docs} documents &middot; {total_chunks} chunks</p>",
+        unsafe_allow_html=True,
+    )
 
     for source, chunk_list in grouped.items():
         topic = chunk_list[0][1].get("topic", "?")
         difficulty = chunk_list[0][1].get("difficulty", "?")
         is_selected = st.session_state.get("selected_document") == source
-        label = f"{'🔍 ' if is_selected else '📄 '}{source}  ·  {len(chunk_list)} chunks  ·  [{topic} | {difficulty}]"
+        label = f"{source}  [{topic} | {difficulty}]  {len(chunk_list)} chunks"
+
         with st.expander(label, expanded=is_selected):
             for i, (text, meta) in enumerate(chunk_list):
-                st.markdown(f"**Chunk {i+1}**")
-                st.text(text[:400] + ("..." if len(text) > 400 else ""))
-                st.divider()
+                st.markdown(
+                    f'<div class="chunk-label">Chunk {i + 1}</div>'
+                    f'<div class="chunk-text">{text[:400]}{"..." if len(text) > 400 else ""}</div>',
+                    unsafe_allow_html=True,
+                )
+                if i < len(chunk_list) - 1:
+                    st.markdown("<hr>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Chat Interface Panel (Right)
+# Right — Chat Interface
+# ---------------------------------------------------------------------------
+
 
 def _is_insufficient(text: str) -> bool:
-    return any(phrase in text.lower() for phrase in [
-        "does not contain enough information",
-        "not enough information",
-        "cannot answer",
-        "no relevant",
-        "does not mention",
-    ])
+    return any(
+        phrase in text.lower()
+        for phrase in [
+            "does not contain enough information",
+            "not enough information",
+            "cannot answer",
+            "no relevant",
+            "does not mention",
+        ]
+    )
 
 
-def render_chat_panel(graph):
+def render_chat_panel(graph) -> None:
     from langchain_core.messages import HumanMessage
 
-    # Header row with Clear Chat button
     col_title, col_btn = st.columns([4, 1])
     with col_title:
-        st.subheader("💬 Interview Prep Chat")
-        st.caption("Ask anything about ANN, CNN, RNN, LSTM, Seq2Seq, or Autoencoder — answers are grounded in your uploaded documents.")
+        st.markdown('<div class="section-label">Interview Preparation</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<p style="font-size:0.8rem; color:#666; margin-top:-4px;">'
+            "Answers are grounded in the ingested corpus. Topics: ANN, CNN, RNN, LSTM, Seq2Seq, Autoencoder.</p>",
+            unsafe_allow_html=True,
+        )
     with col_btn:
         st.write("")
-        if st.button("🗑 Clear Chat", use_container_width=True):
+        if st.button("Clear", use_container_width=True):
             st.session_state.chat_history = []
             st.rerun()
 
-    # Welcome message when chat is empty
     if not st.session_state.chat_history:
-        st.markdown("**Try one of these questions to get started:**")
         example_questions = [
             "What is backpropagation?",
             "How do CNNs detect features in images?",
             "What is the vanishing gradient problem?",
-            "How does an LSTM remember long-term information?",
+            "How does an LSTM retain long-term dependencies?",
         ]
+
+        st.markdown(
+            '<div class="chat-welcome">'
+            '<div class="chat-welcome-title">Suggested questions</div>',
+            unsafe_allow_html=True,
+        )
         col1, col2 = st.columns(2)
         for i, q in enumerate(example_questions):
             col = col1 if i % 2 == 0 else col2
-            if col.button(q, use_container_width=True):
+            if col.button(q, use_container_width=True, key=f"example_{i}"):
                 st.session_state["_pending_query"] = q
                 st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    # Replay chat history with timestamps
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
@@ -335,13 +456,15 @@ def render_chat_panel(graph):
             if msg["role"] == "assistant":
                 insufficient = _is_insufficient(msg["content"])
                 if msg.get("sources") and not msg.get("no_context_found") and not insufficient:
-                    with st.expander("📚 Sources"):
+                    with st.expander("Sources"):
                         for src in msg["sources"]:
-                            st.markdown(f"- 📄 **{src}**")
+                            st.markdown(
+                                f'<span class="source-list">{src}</span>',
+                                unsafe_allow_html=True,
+                            )
 
-    query = st.chat_input("Type your question here...")
+    query = st.chat_input("Enter your question...")
 
-    # Handle example question button clicks
     if "_pending_query" in st.session_state:
         query = st.session_state.pop("_pending_query")
 
@@ -349,7 +472,7 @@ def render_chat_panel(graph):
         st.chat_message("user").write(query)
 
         config = {"configurable": {"thread_id": st.session_state.thread_id}}
-        with st.spinner("Thinking..."):
+        with st.spinner("Generating response..."):
             result = graph.invoke(
                 {"messages": [HumanMessage(content=query)]},
                 config=config,
@@ -363,7 +486,7 @@ def render_chat_panel(graph):
             confidence = final.confidence
             rewritten_query = final.rewritten_query
         else:
-            answer = "Something went wrong — no response generated."
+            answer = "No response generated."
             sources = []
             no_context = False
             confidence = None
@@ -373,66 +496,67 @@ def render_chat_panel(graph):
         with st.chat_message("assistant"):
             st.write(answer)
             if sources and not no_context and not insufficient:
-                with st.expander("📚 Sources"):
+                with st.expander("Sources"):
                     for src in sources:
-                        st.markdown(f"- 📄 **{src}**")
+                        st.markdown(
+                            f'<span class="source-list">{src}</span>',
+                            unsafe_allow_html=True,
+                        )
             if no_context or insufficient:
-                st.warning("⚠️ No relevant content found in corpus.")
+                st.info("No relevant content found in the corpus for this query.")
 
-        from datetime import datetime
         ts = datetime.now().strftime("%H:%M")
         st.session_state.chat_history.append({"role": "user", "content": query, "timestamp": ts})
-        st.session_state.chat_history.append({
-            "role": "assistant",
-            "content": answer,
-            "sources": sources,
-            "no_context_found": no_context,
-            "confidence": confidence,
-            "rewritten_query": rewritten_query,
-            "original_query": query,
-            "timestamp": ts,
-        })
+        st.session_state.chat_history.append(
+            {
+                "role": "assistant",
+                "content": answer,
+                "sources": sources,
+                "no_context_found": no_context,
+                "confidence": confidence,
+                "rewritten_query": rewritten_query,
+                "original_query": query,
+                "timestamp": ts,
+            }
+        )
         st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Main Application
+# Entry Point
 # ---------------------------------------------------------------------------
 
 
 def main() -> None:
-    """
-    Application entry point.
-
-    Sets page config, initialises session state, instantiates shared
-    resources, and renders all UI panels.
-
-    Run with: uv run streamlit run src/rag_agent/ui/app.py
-    """
     settings = get_settings()
 
     st.set_page_config(
         page_title=settings.app_title,
-        page_icon="🧠",
+        page_icon=None,
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    st.title(f"🧠 {settings.app_title}")
-    st.caption(
-        "RAG-powered interview preparation — built with LangChain, LangGraph, and ChromaDB"
+    inject_styles()
+
+    st.markdown(
+        '<div class="page-header">'
+        f'<div class="page-title">{settings.app_title}</div>'
+        '<div class="page-subtitle">'
+        "RAG-powered interview preparation &mdash; LangChain &middot; LangGraph &middot; ChromaDB"
+        "</div>"
+        "</div>",
+        unsafe_allow_html=True,
     )
 
     initialise_session_state()
 
-    # Instantiate shared backend resources
     store = get_vector_store()
     chunker = get_chunker()
     graph = get_graph()
 
-    # Auto-ingest corpus on first run (needed for cloud deployments)
     if store._collection.count() == 0:
-        corpus_dir = Path(get_settings().corpus_dir)
+        corpus_dir = Path(settings.corpus_dir)
         md_files = list(corpus_dir.glob("*.md"))
         if md_files:
             with st.spinner("Loading corpus..."):
@@ -440,12 +564,10 @@ def main() -> None:
                 chunks = chunker.chunk_files(file_pairs)
                 store.ingest(chunks)
 
-    # Sidebar
     render_ingestion_panel(store, chunker)
     render_corpus_stats(store)
     render_ingested_documents_panel(store)
 
-    # Main content area — two columns
     viewer_col, chat_col = st.columns([1, 1], gap="large")
 
     with viewer_col:
