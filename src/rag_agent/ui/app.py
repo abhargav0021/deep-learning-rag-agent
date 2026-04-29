@@ -226,6 +226,17 @@ def inject_styles() -> None:
         hr {
             border-color: #1e1e2e !important;
         }
+
+        /* Force sidebar open */
+        [data-testid="collapsedControl"] {
+            display: none !important;
+        }
+        section[data-testid="stSidebar"] {
+            min-width: 21rem !important;
+            width: 21rem !important;
+            transform: none !important;
+            visibility: visible !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
