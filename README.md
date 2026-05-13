@@ -1,6 +1,6 @@
 # Deep Learning RAG Interview Prep Agent
 
-**Live demo:** https://rag-agent-ccmufe7hlptmlcrvlsjin4.streamlit.app/
+**Live demo:** https://deep-learning-rag-agent-a5iuwkyjkpf9gsjqfnsyh7.streamlit.app/
 
 
 A RAG-powered interview preparation agent built with LangChain, LangGraph,
